@@ -194,68 +194,103 @@ real_data = np.array([[0.94252874 ,0.92       ,0.81538462 ,0.72222222],
 [0.67567568 ,0.45454545 ,0.52173913 ,0.58333333],])
 
 
-def model_free_sample(alpha=0.5, beta=5, gamma=0.98, n_trials=3000,trace=0.6):
-    # MODEL-FREE VERSION
-    #n_trials = 300
-    #alpha = 0.5
+def model_free_sample(alpha=0.5, beta=5, weight=0.3, gamma=0.98, n_trials=3000,trace=0.6):
+
+    # Weighted version, combining model free and model based 2 updates
+    #n_trials = 5000
+    #alpha = 0.6
     #beta = 5
     #trace = 0.6
     #gamma = 0.98
+    w1 = weight
+    w2 = 1 - w1
+    n_states = 3
+    n_arms = 2
 
     tst = Daw_two_step_task()
     state = 0
-    actions_ev = np.zeros((n_trials, 2))
-    q = np.zeros((tst.n_states, tst.n_actions))
+
+    q = np.zeros((tst.n_states, tst.n_actions)) # model free
+    qb = np.zeros((tst.n_states, tst.n_actions)) # MB full
+    #qcomb = np.zeros((tst.n_states, tst.n_actions)) # combined q
     q_ev_1 = np.zeros((n_trials*2, tst.n_states, tst.n_actions))
     q_ev_0 = np.zeros((n_trials, tst.n_actions))
-    
 
+    ac_nextS_nextA_rew_ev = np.zeros((4, n_trials)) #[action, next_state, next_action, reward]
+    ac_rare_rew_ev = np.zeros((3, n_trials))
     action_ev = np.zeros((n_trials, 2))
+
+    T = np.zeros((n_states-1, n_arms))
+    count = np.zeros((n_states-1, n_arms))
+    for i in range(n_states-1):
+        for j in range(n_arms):
+            T[i, j] = np.random.uniform(0,1)
 
     q_ev = np.zeros((tst.n_states, tst.n_actions, n_trials))
     mu_ev = np.zeros((tst.n_of_bandits, tst.n_actions, n_trials))
     muvec = np.zeros((tst.n_of_bandits, tst.n_actions))
 
-    ac_nextS_nextA_rew_ev = np.zeros((4, n_trials)) #[action, next_state, next_action, reward] 
-    ac_rare_rew_ev = np.zeros((3, n_trials)) 
+    ac_nextS_nextA_rew_ev = np.zeros((4, n_trials)) #[action, next_state, next_action, reward]
+    ac_rare_rew_ev = np.zeros((3, n_trials))
 
-    count = np.zeros((tst.n_states-1, tst.n_arms))
+    qMB = np.zeros((1, n_arms))
     for t in range(n_trials):
         state=0
         # choose the spaceship
-        action = softmax(state, q, beta)
+        action = softmax(state, w1*q+w2*qb, beta)
 
         # travel to planet A or B
         next_state, _ = tst.get_outcome(state, action)
 
         # decide on an arm 1 or 2
-        next_action = softmax(next_state, q, beta)
+        # next_action = softmax(next_state, q, beta)
+        next_action = softmax(next_state, w1*q+w2*qb, beta)
 
-        # choose between arm 1 or 2, get reward    
+        # choose between arm 1 or 2, get reward
         _, reward = tst.get_outcome(next_state, next_action)
 
         # update q for the 0 state
 
-        q[state, action] = q[state, action]  + alpha * (0 + gamma * q[next_state, next_action] - q[state, action]) 
+        q[state, action] = q[state, action]  + alpha * (0 + gamma * q[next_state, next_action] - q[state, action])
+
+        qb[state, action] = qb[state, action]  + alpha * (0 + gamma * qb[next_state, next_action] - qb[state, action])
         #q_ev_0[t, action] = q[state, action]
 
         # update q for the 2nd step states
-        q[next_state, next_action] = q[next_state, next_action] + alpha * (reward - q[next_state, next_action]) 
+        q[next_state, next_action] = q[next_state, next_action] + alpha * (reward - q[next_state, next_action])
+        q[state, action] = q[state, action] + alpha * trace * (reward - q[state, action])
+        
+        qb[next_state, next_action] = qb[next_state, next_action] + alpha * (reward - qb[next_state, next_action])
+        qb[state, action] = qb[state, action] + alpha * trace * (reward - qb[next_state, next_action])
 
 
-        q[state, action] = q[state, action] + alpha * trace * (reward - q[next_state, next_action])
-
-
+        ####  Q-MB model based qb function update
+        ####
         ns_idx = next_state-1
-        count[ns_idx, action] = count[ns_idx, action] + 1
+        count[ns_idx, action] += 1
+        T[ns_idx, action] = count[ns_idx, action]/np.sum(count[:,action])
 
+        qtmp = 0
+        for sc in range(n_states-1):
+            qtmp += T[sc, action] * np.max(qb[sc+1, :])
+
+        qb[state, action] = qtmp
+        #####
+        #### update for the other 1st stage action as well, to be more model-based
+        qtmp = 0
+        for sc in range(n_states-1):
+            qtmp += T[sc, 1-action] * np.max(qb[sc+1, :])
+
+        qb[state, 1-action] = qtmp
+
+        ##################xx SAVING stuff (not yet mixed for this part)  ##############x
         for i in range(tst.n_of_bandits):
             muvec[i, :] = tst.bandits[i].mu
 
         q_ev[:, :, t] = q
         mu_ev[:, :, t] = muvec
 
-        ac_nextS_nextA_rew_ev[ :, t] = [action, next_state, next_action, reward] 
+        ac_nextS_nextA_rew_ev[ :, t] = [action, next_state, next_action, reward]
 
         tranzp_01 = tst.context_transition_prob
         if tranzp_01 >= 0.5:
@@ -309,14 +344,14 @@ def model_free_sample(alpha=0.5, beta=5, gamma=0.98, n_trials=3000,trace=0.6):
     
     return type_comm_rew, type_rare_rew, type_comm_norew, type_rare_norew
 
-def model_free_fitness_MSE(real_data, alpha=0.5, beta=5, gamma=0.9, n_trials=10000,trace=0.8):
-    cr, rr, cn, rn = model_free_sample(alpha, beta, gamma, n_trials,trace)
+def model_free_fitness_MSE(real_data, alpha=0.5, beta=5, weight=0.3, gamma=0.9, n_trials=10000,trace=0.8):
+    cr, rr, cn, rn = model_free_sample(alpha, beta, weight, gamma, n_trials,trace)
     n = real_data.shape[0]
 
     return np.sum((real_data - np.array([cr, rr, cn, rn]))*(real_data - np.array([cr, rr, cn, rn])))
 
     
-model_free_history = np.zeros((real_data.shape[0], 3))
+model_free_history = np.zeros((real_data.shape[0], 4))
 for sub in range(real_data.shape[0]):
 
     n_try = 100
@@ -324,24 +359,30 @@ for sub in range(real_data.shape[0]):
     alpha_max = 1
     beta_min = 0.5
     beta_max = 10
+    weight_min = 0.05
+    weight_max = 0.95
 
     best_alpha = None
     best_beta = None
+    best_weight = None
     best_value = 1000
     for i in range(n_try):
         alpha = np.random.random()*(alpha_max - alpha_min) + alpha_min
         beta = np.random.random()*(beta_max - beta_min) + beta_min
-        value = model_free_fitness_MSE(real_data[sub,:], alpha, beta)
+        weight = np.random.random()*(weight_max - weight_min) + weight_min
+        value = model_free_fitness_MSE(real_data[sub,:], alpha, beta, weight)
         if value < best_value:
             best_alpha = alpha
             best_beta = beta
+            best_weight = weight
             best_value = value
         #print(value, alpha, beta)
 
     print('best case for {}:'.format(sub))
-    print(best_value, best_alpha, best_beta)
-    model_free_history[sub, 0] = best_value
-    model_free_history[sub, 1] = best_alpha
-    model_free_history[sub, 2] = best_beta
+    print(best_value, best_alpha, best_beta, best_weight)
+    model_free_history[sub, 0] = value
+    model_free_history[sub, 1] = alpha
+    model_free_history[sub, 2] = beta
+    model_free_history[sub, 3] = weight
 print('all result')
 print(model_free_history)

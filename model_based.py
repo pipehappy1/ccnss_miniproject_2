@@ -195,31 +195,43 @@ real_data = np.array([[0.94252874 ,0.92       ,0.81538462 ,0.72222222],
 
 
 def model_free_sample(alpha=0.5, beta=5, gamma=0.98, n_trials=3000,trace=0.6):
-    # MODEL-FREE VERSION
-    #n_trials = 300
-    #alpha = 0.5
-    #beta = 5
-    #trace = 0.6
+    #MODEL-BASED VERSION, 1 update for q_MB
+    #n_trials = 
+    #alpha = 0.4
+    #beta = 4#1
+    #trace = 0.8
     #gamma = 0.98
 
     tst = Daw_two_step_task()
+    n_bandit = tst.n_of_bandits
+    n_arms = tst.n_actions
+    n_states = tst.n_states
+
+    T = np.zeros((n_states-1, n_arms))
+    count = np.zeros((n_states-1, n_arms))
+
+    for i in range(n_states-1):
+        for j in range(n_arms):
+            T[i, j] = np.random.uniform(0,1)
+
+    ev_nexts = np.zeros(n_trials)
+    ev_s = np.zeros(n_trials)
+    ev_ac = np.zeros(n_trials)
+
+    ac_rare_rew_ev = np.zeros((3, n_trials)) 
+
     state = 0
     actions_ev = np.zeros((n_trials, 2))
     q = np.zeros((tst.n_states, tst.n_actions))
-    q_ev_1 = np.zeros((n_trials*2, tst.n_states, tst.n_actions))
-    q_ev_0 = np.zeros((n_trials, tst.n_actions))
-    
+            # q_ev_1 = np.zeros((n_trials*2, tst.n_states, tst.n_actions))
+            # q_ev_0 = np.zeros((n_trials, tst.n_actions))
 
     action_ev = np.zeros((n_trials, 2))
 
-    q_ev = np.zeros((tst.n_states, tst.n_actions, n_trials))
-    mu_ev = np.zeros((tst.n_of_bandits, tst.n_actions, n_trials))
-    muvec = np.zeros((tst.n_of_bandits, tst.n_actions))
-
-    ac_nextS_nextA_rew_ev = np.zeros((4, n_trials)) #[action, next_state, next_action, reward] 
-    ac_rare_rew_ev = np.zeros((3, n_trials)) 
-
-    count = np.zeros((tst.n_states-1, tst.n_arms))
+            # q_ev = np.zeros((tst.n_states, tst.n_actions, n_trials))
+            # mu_ev = np.zeros((tst.n_of_bandits, tst.n_actions, n_trials))
+            # muvec = np.zeros((tst.n_of_bandits, tst.n_actions))
+    qMB = np.zeros((1, n_arms))
     for t in range(n_trials):
         state=0
         # choose the spaceship
@@ -231,31 +243,51 @@ def model_free_sample(alpha=0.5, beta=5, gamma=0.98, n_trials=3000,trace=0.6):
         # decide on an arm 1 or 2
         next_action = softmax(next_state, q, beta)
 
-        # choose between arm 1 or 2, get reward    
+        # choose between arm 1 or 2, get reward
         _, reward = tst.get_outcome(next_state, next_action)
 
         # update q for the 0 state
-
-        q[state, action] = q[state, action]  + alpha * (0 + gamma * q[next_state, next_action] - q[state, action]) 
-        #q_ev_0[t, action] = q[state, action]
+        q[state, action] = q[state, action]  + alpha * (0 + gamma * q[next_state, next_action] - q[state, action])
 
         # update q for the 2nd step states
-        q[next_state, next_action] = q[next_state, next_action] + alpha * (reward - q[next_state, next_action]) 
-
+        q[next_state, next_action] = q[next_state, next_action] + alpha * (reward - q[next_state, next_action])
 
         q[state, action] = q[state, action] + alpha * trace * (reward - q[next_state, next_action])
 
-
+        ####  Q-MB model based q function update
+        ####
         ns_idx = next_state-1
-        count[ns_idx, action] = count[ns_idx, action] + 1
+        count[ns_idx, action] += 1
+        T[ns_idx, action] = count[ns_idx, action]/np.sum(count[:,action])
 
-        for i in range(tst.n_of_bandits):
-            muvec[i, :] = tst.bandits[i].mu
+        qtmp = 0
+        for sc in range(n_states-1):
+            qtmp += T[sc, action] * np.max(q[sc+1, :])
 
-        q_ev[:, :, t] = q
-        mu_ev[:, :, t] = muvec
+        q[state, action] = qtmp
+        #     #####
+        #     #### update for the other 1st stage action as well, to be more model-based
+        #     qtmp = 0
+        #     for sc in range(n_states-1):
+        #         qtmp += T[sc, 1-action] * np.max(q[sc+1, :])
 
-        ac_nextS_nextA_rew_ev[ :, t] = [action, next_state, next_action, reward] 
+        #     q[state, 1-action] = qtmp
+
+
+        ##################xx SAVING stuff ##############x
+        #for i in range(tst.n_of_bandits):
+        #    muvec[i, :] = tst.bandits[i].mu
+
+        #q_ev[:, :, t] = q
+        #mu_ev[:, :, t] = muvec
+
+        #ac_nextS_nextA_rew_ev[:, t] = [action, next_state, next_action, reward]
+
+        #q_ev_0[t, action] = q[state, action]
+        #q_ev_1[t, next_state, next_action] = q[next_state, next_action]
+        action_ev[t, :] = [action, next_action]
+
+        #ac_nextS_nextA_rew_ev[ :, t] = [action, next_state, next_action, reward]
 
         tranzp_01 = tst.context_transition_prob
         if tranzp_01 >= 0.5:
@@ -268,11 +300,6 @@ def model_free_sample(alpha=0.5, beta=5, gamma=0.98, n_trials=3000,trace=0.6):
                 ac_rare_rew_ev[:, t] = [action, 1, reward]
             else:
                 ac_rare_rew_ev[:, t] = [action, 0, reward]
-
-
-        #q_ev_0[t, action] = q[state, action]
-        #q_ev_1[t, next_state, next_action] = q[next_state, next_action]
-        action_ev[t, :] = [action, next_action]
         
     actions = ac_rare_rew_ev[0, :]
     actions_next_trial = np.roll(actions, -1)
